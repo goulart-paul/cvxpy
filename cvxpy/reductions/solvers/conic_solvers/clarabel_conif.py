@@ -23,12 +23,15 @@ from cvxpy.constraints import PSD, SOC, ExpCone, PowCone3D
 from cvxpy.reductions.solution import Solution, failure_solution
 from cvxpy.reductions.solvers import utilities
 from cvxpy.reductions.solvers.conic_solvers.conic_solver import ConicSolver
+from cvxpy.utilities.versioning import Version
 
 
 def dims_to_solver_cones(cone_dims):
 
     import clarabel
     cones = []
+
+    print("DEBUG: calling dims_to_solver_cones")
 
     # assume that constraints are presented
     # in the preferred ordering of SCS.
@@ -42,8 +45,8 @@ def dims_to_solver_cones(cone_dims):
     for dim in cone_dims.soc:
         cones.append(clarabel.SecondOrderConeT(dim))
 
-    # for dim in cone_dims.psd :
-    #    PJG  : Placeholder for future PSD support
+    for dim in cone_dims.psd:
+        cones.append(clarabel.PSDTriangleConeT(dim))
 
     for _ in range(cone_dims.exp):
         cones.append(clarabel.ExponentialConeT())
@@ -57,10 +60,15 @@ class CLARABEL(ConicSolver):
     """An interface for the Clarabel solver.
     """
 
+    import clarabel
+
     # Solver capabilities.
     MIP_CAPABLE = False
     SUPPORTED_CONSTRAINTS = ConicSolver.SUPPORTED_CONSTRAINTS \
-        + [SOC, ExpCone, PowCone3D]
+        + [SOC, ExpCone, PowCone3D, PSD]
+    if Version(clarabel.__version__) >= Version('0.4.0'):
+        SUPPORTED_CONSTRAINTS.append(PSD)
+
     REQUIRES_CONSTR = True
 
     STATUS_MAP = {
@@ -99,6 +107,8 @@ class CLARABEL(ConicSolver):
         """Extracts the dual value for constraint starting at offset.
         """
 
+        print("DEBUG: calling extract_dual_value")
+
         # PJG : I will leave PSD handling from SCS here
         # as a placeholder to remind me to implement something
         # appropriate once PSD cones are supported
@@ -113,6 +123,8 @@ class CLARABEL(ConicSolver):
     def invert(self, solution, inverse_data):
         """Returns the solution to the original problem given the inverse_data.
         """
+
+        print("DEBUG: calling invert")
 
         attr = {}
         status = self.STATUS_MAP[str(solution.status)]
@@ -184,6 +196,8 @@ class CLARABEL(ConicSolver):
         The result returned by a call to clarabel.solve().
         """
         import clarabel
+
+        print("DEBUG: calling solve_via_data")
 
         A = data[s.A]
         b = data[s.B]
