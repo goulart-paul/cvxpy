@@ -17,9 +17,11 @@ limitations under the License.
 This interface borrows heavily from the one in scs_conif.py
 """
 import scipy.sparse as sp
+import numpy as np
 
 import cvxpy.settings as s
 from cvxpy.constraints import PSD, SOC, ExpCone, PowCone3D
+from cvxpy.expressions.expression import Expression
 from cvxpy.reductions.solution import Solution, failure_solution
 from cvxpy.reductions.solvers import utilities
 from cvxpy.reductions.solvers.conic_solvers.conic_solver import ConicSolver
@@ -30,8 +32,6 @@ def dims_to_solver_cones(cone_dims):
 
     import clarabel
     cones = []
-
-    print("DEBUG: calling dims_to_solver_cones")
 
     # assume that constraints are presented
     # in the preferred ordering of SCS.
@@ -55,6 +55,74 @@ def dims_to_solver_cones(cone_dims):
         cones.append(clarabel.PowerConeT(pow))
     return cones
 
+def triu_to_full(upper_tri, n):
+    """Expands n*(n+1)//2 upper triangular to full matrix, scaling 
+    off diagonals by 1/sqrt(2).   This is similar to the SCS behaviour,
+    but the upper triangle is used.
+
+    Parameters
+    ----------
+    upper_tri : numpy.ndarray
+        A NumPy array representing the upper triangular part of the
+        matrix, stacked in column-major order.
+    n : int
+        The number of rows (columns) in the full square matrix.
+
+    Returns
+    -------
+    numpy.ndarray
+        A 2-dimensional ndarray that is the scaled expansion of the upper
+        triangular array.
+
+    Notes
+    -----
+    As in the related SCS function, the function below appears to have 
+    triu/tril confused but is nevertheless correct. 
+
+    """
+    full = np.zeros((n, n))
+    full[np.tril_indices(n)] = upper_tri
+    full += full.T
+    full[np.diag_indices(n)] /= 2
+    full[np.tril_indices(n, k=-1)] /= np.sqrt(2)
+    full[np.triu_indices(n, k=1)]  /= np.sqrt(2)
+    return np.reshape(full, n*n, order="F")
+
+def clarabel_psdvec_to_psdmat(vec: Expression, indices: np.ndarray) -> Expression:
+    """
+    Return "V" so that "vec[indices] belongs to the Clarabel PSDTriangleCone"
+    can be written in natural cvxpy syntax as "V >> 0".
+
+    Parameters
+    ----------
+    vec : cvxpy.expressions.expression.Expression
+        Must have ``vec.is_affine() == True``.
+    indices : ndarray
+        Contains nonnegative integers, which can index into ``vec``.
+
+    Notes
+    -----
+    This function is similar to ``triu_to_full``, which is also found
+    in this file. The difference is that this function works without
+    indexed assignment ``mat[i,j] = expr``. Such indexed assignment
+    cannot be used, because this function builds a cvxpy Expression,
+    rather than a numpy ndarray.
+    """
+    n = int(np.sqrt(indices.size * 2))
+    rows, cols = np.tril_indices(n)   # tril here not an error
+    mats = []
+    for i, idx in enumerate(indices):
+        r, c = rows[i], cols[i]
+        mat = np.zeros(shape=(n, n))
+        if r == c:
+            mat[r, r] = 1
+        else:
+            mat[r, c] = 1 / np.sqrt(2)
+            mat[c, r] = 1 / np.sqrt(2)
+        mat = vec[idx] * mat
+        mats.append(mat)
+    V = sum(mats)
+    return V
 
 class CLARABEL(ConicSolver):
     """An interface for the Clarabel solver.
@@ -66,7 +134,7 @@ class CLARABEL(ConicSolver):
     MIP_CAPABLE = False
     SUPPORTED_CONSTRAINTS = ConicSolver.SUPPORTED_CONSTRAINTS \
         + [SOC, ExpCone, PowCone3D, PSD]
-    if Version(clarabel.__version__) >= Version('0.4.0'):
+    if Version(clarabel.__version__) >= Version('0.5.0'): 
         SUPPORTED_CONSTRAINTS.append(PSD)
 
     REQUIRES_CONSTR = True
@@ -98,33 +166,69 @@ class CLARABEL(ConicSolver):
         import clarabel  # noqa F401
 
     def supports_quad_obj(self) -> bool:
-        """Clarabel supports quadratic objective with any combination of conic constraints.
+        """Clarabel supports quadratic objective with any combination 
+        of conic constraints.
         """
         return True
+    
+    @staticmethod
+    def psd_format_mat(constr):
+        """Return a linear operator to multiply by PSD constraint coefficients.
+
+        Special cases PSD constraints, as Clarabel expects constraints to be
+        imposed on the upper triangular part of the variable matrix with
+        symmetric scaling (i.e. off-diagonal sqrt(2) scalinig) applied.
+ 
+        """
+        rows = cols = constr.expr.shape[0]
+        entries = rows * (cols + 1)//2
+
+        row_arr = np.arange(0, entries)
+
+        upper_diag_indices = np.triu_indices(rows)
+        col_arr = np.sort(np.ravel_multi_index(upper_diag_indices,
+                                               (rows, cols),
+                                               order='F'))
+
+        val_arr = np.zeros((rows, cols))
+        val_arr[upper_diag_indices] = np.sqrt(2)
+        np.fill_diagonal(val_arr, 1.0)
+        val_arr = np.ravel(val_arr, order='F')
+        val_arr = val_arr[np.nonzero(val_arr)]
+
+        shape = (entries, rows*cols)
+        scaled_upper_tri = sp.csc_matrix((val_arr, (row_arr, col_arr)), shape)
+
+        idx = np.arange(rows * cols)
+        val_symm = 0.5 * np.ones(2 * rows * cols)
+        K = idx.reshape((rows, cols))
+        row_symm = np.append(idx, np.ravel(K, order='F'))
+        col_symm = np.append(idx, np.ravel(K.T, order='F'))
+        symm_matrix = sp.csc_matrix((val_symm, (row_symm, col_symm)))
+
+        return scaled_upper_tri @ symm_matrix
 
     @staticmethod
     def extract_dual_value(result_vec, offset, constraint):
         """Extracts the dual value for constraint starting at offset.
         """
 
-        print("DEBUG: calling extract_dual_value")
-
-        # PJG : I will leave PSD handling from SCS here
-        # as a placeholder to remind me to implement something
-        # appropriate once PSD cones are supported
-
+        # special case: PSD constraints treated internally in
+        # svec (scaled triangular) form
         if isinstance(constraint, PSD):
-            raise RuntimeError("PSD cones not yet supported. This line should be unreachable.")
-
+            dim = constraint.shape[0]
+            upper_tri_dim = dim * (dim + 1) >> 1
+            new_offset = offset + upper_tri_dim
+            upper_tri = result_vec[offset:new_offset]
+            full = triu_to_full(upper_tri, dim)
+            return full, new_offset
+        
         else:
-            return utilities.extract_dual_value(result_vec, offset,
-                                                constraint)
+            return utilities.extract_dual_value(result_vec, offset, constraint)
 
     def invert(self, solution, inverse_data):
         """Returns the solution to the original problem given the inverse_data.
         """
-
-        print("DEBUG: calling invert")
 
         attr = {}
         status = self.STATUS_MAP[str(solution.status)]
@@ -196,8 +300,6 @@ class CLARABEL(ConicSolver):
         The result returned by a call to clarabel.solve().
         """
         import clarabel
-
-        print("DEBUG: calling solve_via_data")
 
         A = data[s.A]
         b = data[s.B]
