@@ -55,8 +55,9 @@ def dims_to_solver_cones(cone_dims):
         cones.append(clarabel.PowerConeT(pow))
     return cones
 
+
 def triu_to_full(upper_tri, n):
-    """Expands n*(n+1)//2 upper triangular to full matrix, scaling 
+    """Expands n*(n+1)//2 upper triangular to full matrix, scaling
     off diagonals by 1/sqrt(2).   This is similar to the SCS behaviour,
     but the upper triangle is used.
 
@@ -76,8 +77,8 @@ def triu_to_full(upper_tri, n):
 
     Notes
     -----
-    As in the related SCS function, the function below appears to have 
-    triu/tril confused but is nevertheless correct. 
+    As in the related SCS function, the function below appears to have
+    triu/tril confused but is nevertheless correct.
 
     """
     full = np.zeros((n, n))
@@ -85,7 +86,7 @@ def triu_to_full(upper_tri, n):
     full += full.T
     full[np.diag_indices(n)] /= 2
     full[np.tril_indices(n, k=-1)] /= np.sqrt(2)
-    full[np.triu_indices(n, k=1)]  /= np.sqrt(2)
+    full[np.triu_indices(n, k=1)] /= np.sqrt(2)
     return np.reshape(full, n*n, order="F")
 
 def clarabel_psdvec_to_psdmat(vec: Expression, indices: np.ndarray) -> Expression:
@@ -124,6 +125,7 @@ def clarabel_psdvec_to_psdmat(vec: Expression, indices: np.ndarray) -> Expressio
     V = sum(mats)
     return V
 
+
 class CLARABEL(ConicSolver):
     """An interface for the Clarabel solver.
     """
@@ -134,10 +136,8 @@ class CLARABEL(ConicSolver):
     MIP_CAPABLE = False
     SUPPORTED_CONSTRAINTS = ConicSolver.SUPPORTED_CONSTRAINTS \
         + [SOC, ExpCone, PowCone3D, PSD]
-    if Version(clarabel.__version__) >= Version('0.5.0'): 
+    if Version(clarabel.__version__) >= Version('0.5.0'):
         SUPPORTED_CONSTRAINTS.append(PSD)
-
-    REQUIRES_CONSTR = True
 
     STATUS_MAP = {
                     "Solved": s.OPTIMAL,
@@ -170,7 +170,7 @@ class CLARABEL(ConicSolver):
         of conic constraints.
         """
         return True
-    
+
     @staticmethod
     def psd_format_mat(constr):
         """Return a linear operator to multiply by PSD constraint coefficients.
@@ -178,7 +178,7 @@ class CLARABEL(ConicSolver):
         Special cases PSD constraints, as Clarabel expects constraints to be
         imposed on the upper triangular part of the variable matrix with
         symmetric scaling (i.e. off-diagonal sqrt(2) scalinig) applied.
- 
+
         """
         rows = cols = constr.expr.shape[0]
         entries = rows * (cols + 1)//2
@@ -222,7 +222,7 @@ class CLARABEL(ConicSolver):
             upper_tri = result_vec[offset:new_offset]
             full = triu_to_full(upper_tri, dim)
             return full, new_offset
-        
+
         else:
             return utilities.extract_dual_value(result_vec, offset, constraint)
 
@@ -234,7 +234,8 @@ class CLARABEL(ConicSolver):
         status = self.STATUS_MAP[str(solution.status)]
         attr[s.SOLVE_TIME] = solution.solve_time
         attr[s.NUM_ITERS] = solution.iterations
-        # attr[s.EXTRA_STATS] = solution.extra.FOO #more detailed statistics here when available
+        # more detailed statistics here when available
+        # attr[s.EXTRA_STATS] = solution.extra.FOO
 
         if status in s.SOLUTION_PRESENT:
             primal_val = solution.obj_val
